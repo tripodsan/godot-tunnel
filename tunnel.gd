@@ -7,10 +7,14 @@ extends Node3D
 @export var segment_length    : float  = 3.0
 @export var min_radius        : float  = 1.5
 @export var max_radius        : float  = 12.0
-@export var radius_noise_freq : float  = 0.15
-@export var path_noise_freq   : float  = 0.08
+@export var radius_noise: FastNoiseLite
+@export var path_noise: FastNoiseLite
+#@export var path_noise_freq   : float  = 0.08
 @export var path_noise_amp    : float  = 4.0
 @export_tool_button("Rebuild") var tool_button_rebuild = _build_tube
+
+var mat := preload('res://tube.material');
+#var mat := preload('res://test.material');
 
 # ─── Internals ────────────────────────────────────────────────────────────────
 var _mesh_instance : MeshInstance3D
@@ -39,9 +43,7 @@ func _build_tube() -> void:
   add_child(_mesh_instance)
   _mesh_instance.owner = owner
   _mesh_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-  var mat := StandardMaterial3D.new()
-  mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-  _mesh_instance.material_overlay = mat
+  _mesh_instance.material_override = mat
 
   if not Engine.is_editor_hint():
     _static_body = StaticBody3D.new()
@@ -64,11 +66,12 @@ func _generate_rings() -> Array[Ring]:
 
   # Build control points with path noise
   var ctrl : Array[Vector3] = []
+  var pt := Vector3.ZERO
   for i in range(segments_ahead + 3):
-    var t := float(i)
-    var x := sin(t * path_noise_freq * 1.3) * path_noise_amp
-    var y := sin(t * path_noise_freq * 0.7 + 1.0) * path_noise_amp * 0.6
-    ctrl.append(Vector3(x, y, -t * segment_length))
+    ctrl.append(pt)
+    var x := path_noise.get_noise_2d(i, 0)
+    var y := path_noise.get_noise_2d(i, 0.5)
+    pt += Vector3(x * path_noise_amp, y * path_noise_amp, -segment_length)
 
   # Sample Catmull-Rom and compute rotation-minimizing frames
   var prev_n := Vector3.UP
@@ -88,10 +91,7 @@ func _generate_rings() -> Array[Ring]:
     prev_n = n
 
     # Radius and LOD
-    var noise_t  := float(i) * radius_noise_freq
-    var nr       := (sin(noise_t) * 0.5 + 0.5)           # 0..1
-    nr           = nr * nr * (3.0 - 2.0 * nr)            # smoothstep
-    var radius   := lerpf(min_radius, max_radius, nr)
+    var radius   := lerpf(min_radius, max_radius, radius_noise.get_noise_1d(i) / 0.5 + 1.0)
     var vcount   := _verts_for_radius(radius)
 
     var ring     := Ring.new()
@@ -121,13 +121,14 @@ func _build_mesh(rings: Array[Ring]) -> ArrayMesh:
     ring_start.append(verts.size())
     var ring := rings[i]
     var k    := ring.verts
-    for j in range(k):
+    # create K+1 vertices, where start and end are the same so the UVs work
+    for j in range(k + 1):
       var angle := TAU * float(j) / float(k)
       var local := cos(angle) * ring.normal + sin(angle) * ring.binormal
       var pos   := ring.center + local * ring.radius
       verts.append(pos)
-      normals.append(-local)          # inward normals (we're inside)
-      uvs.append(Vector2(float(j) / float(k), arc_len))
+      normals.append(-local)
+      uvs.append(Vector2(float(j) / float(k + 1), arc_len))
     if i > 0:
       arc_len += rings[i].center.distance_to(rings[i-1].center) / (max_radius * TAU)
 
@@ -165,9 +166,11 @@ func _build_mesh(rings: Array[Ring]) -> ArrayMesh:
 # Equal ring sizes — simple quad strip
 func _stitch_equal(idx: PackedInt32Array, sa: int, sb: int, k: int) -> void:
   for j in range(k):
-    var j1 := (j + 1) % k
-    idx.append_array([sa+j, sb+j, sa+j1,
-               sb+j, sb+j1, sa+j1])
+    var j1 := (j + 1) #% k
+    idx.append_array([
+      sa+j, sa+j1, sb+j,
+      sb+j, sa+j1, sb+j1,
+    ])
 
 # 1:2 split — coarse ring A, fine ring B (kb = 2*ka)
 # Each coarse edge fans into 3 triangles

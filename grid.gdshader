@@ -1,8 +1,9 @@
 shader_type spatial;
+render_mode diffuse_burley, cull_disabled;
 //render_mode blend_premul_alpha;
 
-uniform float scale_0 : hint_range(0.01, 1024, 0.01);
-uniform float scale_1 : hint_range(0.01, 1024, 0.01);
+uniform float scale_0 : hint_range(1, 1024, 0.2);
+uniform float scale_1 : hint_range(1, 1024, 0.2);
 
 uniform float line_scale_0 : hint_range(0.001, 1, 0.001);
 uniform float line_scale_1 : hint_range(0.001, 1, 0.001);
@@ -52,6 +53,6 @@ void fragment() {
   vec4 grid_1 = vec4(pristineGrid(uv * float(scale_1), vec2(line_scale_1)));
   //ALBEDO.a = bg_alpha;
   vec3 bg = vec3(0.0);
-  ALBEDO.rgb = mix(bg.rgb, color_0.rgb, grid_0.rgb);
   ALBEDO.rgb = mix(bg.rgb, color_1.rgb, grid_1.rgb);
+  ALBEDO.rgb = mix(ALBEDO.rgb, color_0.rgb, grid_0.rgb);
 }
