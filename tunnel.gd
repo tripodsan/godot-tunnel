@@ -1,5 +1,6 @@
 @tool
 extends Node3D
+class_name Tunnel
 
 # ─── Parameters ───────────────────────────────────────────────────────────────
 @export var segments_ahead    : int     = 40
@@ -8,6 +9,7 @@ extends Node3D
 @export var min_radius        : float  = 1.5
 @export var max_radius        : float  = 12.0
 @export var radius_noise: FastNoiseLite
+@export var path:Path3D
 @export var path_noise: FastNoiseLite
 #@export var path_noise_freq   : float  = 0.08
 @export var path_noise_amp    : float  = 4.0
@@ -20,17 +22,17 @@ var mat := preload('res://tube.material');
 var _mesh_instance : MeshInstance3D
 var _col_shape     : CollisionShape3D
 var _static_body   : StaticBody3D
+var _rings:Array[Ring] = []
 
 # Per-ring data
 class Ring:
   var center   : Vector3
-  var tangent  : Vector3
-  var normal   : Vector3
-  var binormal : Vector3
+  var tangent  : Vector3 # forward vector
+  var normal   : Vector3 # "up" vector
+  var binormal : Vector3 # "side" vector
   var radius   : float
   var verts    : int      # 8, 16, or 32
 
-# ─── Lifecycle ────────────────────────────────────────────────────────────────
 func _ready() -> void:
   _build_tube()
 
@@ -49,8 +51,8 @@ func _build_tube() -> void:
     _static_body = StaticBody3D.new()
     add_child(_static_body)
 
-  var rings := _generate_rings()
-  var arr_mesh := _build_mesh(rings)
+  _rings = _generate_rings()
+  var arr_mesh := _build_mesh(_rings)
   _mesh_instance.mesh = arr_mesh
 
   if not Engine.is_editor_hint():
@@ -60,8 +62,21 @@ func _build_tube() -> void:
     _col_shape.shape = shape
     _static_body.add_child(_col_shape)
 
-# ─── Step 1: Generate spline centerline + frames ──────────────────────────────
-func _generate_rings() -> Array[Ring]:
+func get_shell_position(radial:Vector2)->Vector3:
+  var idx:int = clamp(round(radial.x / segment_length), 0, _rings.size() - 1)
+  var r:Ring = _rings[idx]
+
+
+  return Vector3.ZERO
+
+func get_normal(pos:Vector3)->Vector3:
+  var p := path.curve.get_closest_point(pos)
+  return (p - pos).normalized()
+
+func get_center(pos:Vector3)->Vector3:
+  return path.curve.get_closest_point(pos)
+
+func _generate_rings_catmul() -> Array[Ring]:
   var rings : Array[Ring] = []
 
   # Build control points with path noise
@@ -92,7 +107,7 @@ func _generate_rings() -> Array[Ring]:
 
     # Radius and LOD
     var radius   := lerpf(min_radius, max_radius, radius_noise.get_noise_1d(i) / 0.5 + 1.0)
-    var vcount   := _verts_for_radius(radius)
+    var vcount   := base_ring_verts #  _verts_for_radius(radius)
 
     var ring     := Ring.new()
     ring.center  = center
@@ -105,7 +120,28 @@ func _generate_rings() -> Array[Ring]:
 
   return rings
 
-# ─── Step 2: Build ArrayMesh ──────────────────────────────────────────────────
+func _generate_rings() -> Array[Ring]:
+  var rings : Array[Ring] = []
+  var d:float = 0
+  while d < path.curve.get_baked_length():
+    var tx:Transform3D = path.curve.sample_baked_with_rotation(d, true)
+
+    # Radius and LOD
+    var radius   := lerpf(min_radius, max_radius, radius_noise.get_noise_1d(d) / 0.5 + 1.0)
+    var vcount   := base_ring_verts #_verts_for_radius(radius)
+
+    var ring     := Ring.new()
+    ring.center  = tx.origin
+    ring.tangent = tx.basis.z
+    ring.normal  = tx.basis.y
+    ring.binormal = tx.basis.x
+    ring.radius  = radius
+    ring.verts   = vcount
+    rings.append(ring)
+    d += segment_length
+
+  return rings
+
 func _build_mesh(rings: Array[Ring]) -> ArrayMesh:
   var verts   : PackedVector3Array = []
   var normals : PackedVector3Array = []
@@ -138,17 +174,17 @@ func _build_mesh(rings: Array[Ring]) -> ArrayMesh:
     var kb  := rings[i + 1].verts
     var sa  := ring_start[i]
     var sb  := ring_start[i + 1]
+    _stitch_equal(indices, sa, sb, ka)
 
-    if ka == kb:
-      _stitch_equal(indices, sa, sb, ka)
-    elif kb == ka * 2:
-      _stitch_split(indices, sa, sb, ka)   # 1 → 2
-    elif ka == kb * 2:
-      _stitch_merge(indices, sa, sb, kb)   # 2 → 1
-    else:
-      # Fallback: resample both rings to lcm count via fan centroid
-      _stitch_fan_bridge(indices, verts, normals, uvs,
-                rings[i], rings[i+1], sa, sb)
+    #if ka == kb:
+    #elif kb == ka * 2:
+      #_stitch_split(indices, sa, sb, ka)   # 1 → 2
+    #elif ka == kb * 2:
+      #_stitch_merge(indices, sa, sb, kb)   # 2 → 1
+    #else:
+      ## Fallback: resample both rings to lcm count via fan centroid
+      #_stitch_fan_bridge(indices, verts, normals, uvs,
+                #rings[i], rings[i+1], sa, sb)
 
   var arr := []
   arr.resize(Mesh.ARRAY_MAX)

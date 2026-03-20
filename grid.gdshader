@@ -9,6 +9,8 @@ uniform float line_scale_0 : hint_range(0.001, 1, 0.001);
 uniform float line_scale_1 : hint_range(0.001, 1, 0.001);
 uniform float bg_alpha : hint_range(0.0, 1);
 
+uniform float depth_fade_distance : hint_range(0.0, 1000.0, 0.01) = 1.5;
+
 uniform vec4 color_0 : source_color;
 uniform vec4 color_1 : source_color;
 
@@ -55,4 +57,10 @@ void fragment() {
   vec3 bg = vec3(0.0);
   ALBEDO.rgb = mix(bg.rgb, color_1.rgb, grid_1.rgb);
   ALBEDO.rgb = mix(ALBEDO.rgb, color_0.rgb, grid_0.rgb);
+  
+  //float depth = (1.0 - FRAGCOORD.z) / FRAGCOORD.w;
+ //float final = clamp(depth / depth_fade_distance, 0, 1); // 3.0 being in meters behind the plane
+
+  //ALBEDO.rgb = mix(ALBEDO.rgb, bg.rgb, final);
+  //ALBEDO.rgb = vec3(1.0 - final);
 }

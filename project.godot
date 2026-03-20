@@ -15,7 +15,7 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 [application]
 
 config/name="godot-tunnel"
-run/main_scene="uid://csoiggmvulfw7"
+run/main_scene="uid://r1tlihj46pp2"
 config/features=PackedStringArray("4.6", "Forward Plus")
 config/icon="res://icon.svg"
 
