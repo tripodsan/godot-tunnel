@@ -8,6 +8,8 @@ class_name Tunnel
 @export var segment_length    : float  = 3.0
 @export var min_radius        : float  = 1.5
 @export var max_radius        : float  = 12.0
+@export var num_exit_rings    : int  = 8
+@export var exit_radius : float = 100.0
 @export var radius_noise: FastNoiseLite
 @export var path:Path3D
 @export var path_noise: FastNoiseLite
@@ -24,6 +26,7 @@ var _col_shape     : CollisionShape3D
 var _static_body   : StaticBody3D
 var _rings:Array[Ring] = []
 
+enum RING_TYPE { CIRCLE, SQUIRCLE, SQUARE }
 # Per-ring data
 class Ring:
   var center   : Vector3
@@ -32,6 +35,8 @@ class Ring:
   var binormal : Vector3 # "side" vector
   var radius   : float
   var verts    : int      # 8, 16, or 32
+  var type:RING_TYPE = RING_TYPE.CIRCLE
+  var arc_scale:float = 1.0
 
 func _ready() -> void:
   _build_tube()
@@ -61,13 +66,6 @@ func _build_tube() -> void:
     _col_shape = CollisionShape3D.new()
     _col_shape.shape = shape
     _static_body.add_child(_col_shape)
-
-func get_shell_position(radial:Vector2)->Vector3:
-  var idx:int = clamp(round(radial.x / segment_length), 0, _rings.size() - 1)
-  var r:Ring = _rings[idx]
-
-
-  return Vector3.ZERO
 
 func get_normal(pos:Vector3)->Vector3:
   var p := path.curve.get_closest_point(pos)
@@ -123,11 +121,11 @@ func _generate_rings_catmul() -> Array[Ring]:
 func _generate_rings() -> Array[Ring]:
   var rings : Array[Ring] = []
   var d:float = 0
+  var tx:Transform3D
+  var radius:float
   while d < path.curve.get_baked_length():
-    var tx:Transform3D = path.curve.sample_baked_with_rotation(d, true)
-
-    # Radius and LOD
-    var radius   := lerpf(min_radius, max_radius, radius_noise.get_noise_1d(d) / 0.5 + 1.0)
+    tx = path.curve.sample_baked_with_rotation(d, true)
+    radius   = lerpf(min_radius, max_radius, radius_noise.get_noise_1d(d) / 0.5 + 1.0)
     var vcount   := base_ring_verts #_verts_for_radius(radius)
 
     var ring     := Ring.new()
@@ -139,6 +137,30 @@ func _generate_rings() -> Array[Ring]:
     ring.verts   = vcount
     rings.append(ring)
     d += segment_length
+
+  # add rings for exit
+  var target:Transform3D = Transform3D(Vector3.BACK, Vector3.LEFT, Vector3.DOWN, tx.origin + Vector3.UP * num_exit_rings * segment_length)
+  for i in num_exit_rings:
+    # assume tx is up
+    var dx := tx.interpolate_with(target, float(i) / (num_exit_rings - 1))
+    tx.origin -= segment_length * tx.basis.z
+
+    var ring     := Ring.new()
+    ring.center  = dx.origin
+    ring.tangent = dx.basis.z
+    ring.normal  = dx.basis.y
+    ring.binormal = dx.basis.x
+    var t:float = i / float(num_exit_rings)
+    var x:float = pow(2, 5 * t - 5) if  t > 0 else 0
+    ring.radius  = lerpf(radius, exit_radius, x)
+    ring.verts   = base_ring_verts
+    ring.arc_scale = lerpf(1.0, 0.93, x)
+    rings.append(ring)
+  rings[-1].type = RING_TYPE.SQUARE
+  rings[-2].type = RING_TYPE.SQUARE
+  rings[-3].type = RING_TYPE.SQUARE
+
+
 
   return rings
 
@@ -160,11 +182,45 @@ func _build_mesh(rings: Array[Ring]) -> ArrayMesh:
     # create K+1 vertices, where start and end are the same so the UVs work
     for j in range(k + 1):
       var angle := TAU * float(j) / float(k)
-      var local := cos(angle) * ring.normal + sin(angle) * ring.binormal
-      var pos   := ring.center + local * ring.radius
-      verts.append(pos)
-      normals.append(-local)
-      uvs.append(Vector2(float(j) / float(k + 1), arc_len))
+      if ring.type == RING_TYPE.SQUARE:
+        var d := float((j + k/8)%k) / float(k)
+        var x:float
+        var y:float
+        if d < 0.25:
+          x = 1
+          y = d * 8.0 - 1.0
+        elif d < 0.5:
+          x = 1.0 - (d - 0.25)  * 8.0
+          y = 1
+        elif d < 0.75:
+          x = -1
+          y = 1.0 - (d - 0.5) * 8.0
+        else:
+          x = (d - 0.75)  * 8.0 - 1.0
+          y = -1
+        var local:Vector3 = x*ring.normal + y*ring.binormal
+        var pos   := ring.center + local * ring.radius
+        verts.append(pos)
+        normals.append(-local)
+        uvs.append(Vector2(float(j) / float(k + 1), arc_len * ring.arc_scale))
+      elif ring.type == RING_TYPE.SQUIRCLE:
+        var t := clampf(inverse_lerp(50.0, 100.0, ring.radius), 0.0, 1.0)
+        # Squircle exponent: 2 = circle, large = square
+        var exp := lerpf(2.0, 18.0, t)
+        # Generalised circle (Lamé curve)
+        var x:float = sign(cos(angle)) * pow(abs(cos(angle)), 2.0 / exp)
+        var y:float = sign(sin(angle)) * pow(abs(sin(angle)), 2.0 / exp)
+        var local:Vector3 = x*ring.normal + y*ring.binormal
+        var pos   := ring.center + local * ring.radius
+        verts.append(pos)
+        normals.append(-local)
+        uvs.append(Vector2(float(j) / float(k + 1), arc_len))
+      else:
+        var local := cos(angle) * ring.normal + sin(angle) * ring.binormal
+        var pos   := ring.center + local * ring.radius
+        verts.append(pos)
+        normals.append(-local)
+        uvs.append(Vector2(float(j) / float(k + 1), arc_len * ring.arc_scale))
     if i > 0:
       arc_len += rings[i].center.distance_to(rings[i-1].center) / (max_radius * TAU)
 
